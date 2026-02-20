@@ -1,34 +1,69 @@
 import { useRef, useEffect, useState } from 'react'
 
-export default function WebcamCapture({ blurIntensity, onFpsUpdate }) {
+const getWebSocketUrl = () => {
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL
+  }
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${protocol}://${window.location.host}/ws/video`
+}
+
+export default function WebcamCapture({ blurIntensity, onFpsUpdate, onObjectSelect, onLoadingChange }) {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
+  const sendingRef = useRef(false)
+  const qualityRef = useRef(0.6)
+  const sendEveryMs = 60
+  const maxProcessingWidth = 960
   const [ws, setWs] = useState(null)
   const [isActive, setIsActive] = useState(false)
+  const [isConnected, setIsConnected] = useState(false)
+  const [hasFrame, setHasFrame] = useState(false)
   const fpsRef = useRef({ frames: 0, lastTime: Date.now() })
 
   useEffect(() => {
-    const websocket = new WebSocket('ws://localhost:8000/ws/video')
+    if (onLoadingChange) {
+      onLoadingChange(true)
+    }
+
+    const websocket = new WebSocket(getWebSocketUrl())
     
     websocket.onopen = () => {
-      console.log('WebSocket connected')
+      setIsConnected(true)
       startWebcam()
+    }
+
+    websocket.onerror = (error) => {
+      console.error('WebSocket error:', error)
+      setIsConnected(false)
+      if (onLoadingChange) {
+        onLoadingChange(false)
+      }
     }
     
     websocket.onmessage = (event) => {
-      const data = JSON.parse(event.data)
+      let data
+      try {
+        data = JSON.parse(event.data)
+      } catch (error) {
+        console.error('Invalid websocket payload:', error)
+        return
+      }
       
       if (data.type === 'frame') {
+        sendingRef.current = false
         const canvas = canvasRef.current
+        if (!canvas) return
         const ctx = canvas.getContext('2d')
+        if (!ctx) return
         const img = new Image()
         
         img.onload = () => {
           canvas.width = img.width
           canvas.height = img.height
           ctx.drawImage(img, 0, 0)
+          setHasFrame(true)
           
-          // Update FPS
           fpsRef.current.frames++
           const now = Date.now()
           if (now - fpsRef.current.lastTime >= 1000) {
@@ -39,26 +74,67 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate }) {
         }
         
         img.src = data.data
+      } else if (data.type === 'selected') {
+        if (onObjectSelect) {
+          onObjectSelect({ selected: data.track_id !== null && data.track_id !== undefined, trackId: data.track_id })
+        }
+      } else if (data.type === 'reset') {
+        if (onObjectSelect) {
+          onObjectSelect({ selected: false, trackId: null })
+        }
       }
     }
     
+    websocket.onclose = () => {
+      setIsConnected(false)
+      setIsActive(false)
+      if (onLoadingChange) {
+        onLoadingChange(false)
+      }
+    }
+
     setWs(websocket)
     
     return () => {
       websocket.close()
+      setIsConnected(false)
       stopWebcam()
+      setIsActive(false)
+      setHasFrame(false)
+      sendingRef.current = false
+      if (onLoadingChange) {
+        onLoadingChange(false)
+      }
+      onFpsUpdate(0)
     }
-  }, [])
+  }, [onFpsUpdate, onLoadingChange])
+
+  useEffect(() => {
+    if (onLoadingChange) {
+      onLoadingChange(!(isConnected && isActive && hasFrame))
+    }
+  }, [isConnected, isActive, hasFrame, onLoadingChange])
 
   const startWebcam = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { width: 1280, height: 720 } 
+        video: {
+          width: { ideal: 960 },
+          height: { ideal: 540 },
+          frameRate: { ideal: 20, max: 24 }
+        }
       })
-      videoRef.current.srcObject = stream
+      const video = videoRef.current
+      if (!video) return
+      video.srcObject = stream
+      await video.play()
       setIsActive(true)
     } catch (err) {
       console.error('Webcam error:', err)
+      setIsActive(false)
+      if (onLoadingChange) {
+        onLoadingChange(false)
+      }
     }
   }
 
@@ -69,20 +145,35 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate }) {
   }
 
   useEffect(() => {
-    if (!videoRef.current || !ws || !isActive) return
+    if (!videoRef.current || !ws || !isConnected || !isActive) return
 
     const video = videoRef.current
     const canvas = document.createElement('canvas')
     const ctx = canvas.getContext('2d')
 
     const sendFrame = () => {
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
+      if (!video.videoWidth || !video.videoHeight) return
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
+      if (ws.readyState !== WebSocket.OPEN) return
+      if (sendingRef.current) return
+
+      const scale = video.videoWidth > maxProcessingWidth ? maxProcessingWidth / video.videoWidth : 1
+      canvas.width = Math.max(1, Math.floor(video.videoWidth * scale))
+      canvas.height = Math.max(1, Math.floor(video.videoHeight * scale))
       ctx.drawImage(video, 0, 0)
 
       canvas.toBlob((blob) => {
+        if (!blob || ws.readyState !== WebSocket.OPEN) {
+          sendingRef.current = false
+          return
+        }
+        sendingRef.current = true
         const reader = new FileReader()
         reader.onloadend = () => {
+          if (ws.readyState !== WebSocket.OPEN) {
+            sendingRef.current = false
+            return
+          }
           ws.send(JSON.stringify({
             type: 'frame',
             data: reader.result,
@@ -90,13 +181,16 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate }) {
           }))
         }
         reader.readAsDataURL(blob)
-      }, 'image/jpeg', 0.8)
+      }, 'image/jpeg', qualityRef.current)
     }
 
-    const interval = setInterval(sendFrame, 33) // ~30 FPS
+    const interval = setInterval(sendFrame, sendEveryMs)
 
-    return () => clearInterval(interval)
-  }, [ws, isActive, blurIntensity])
+    return () => {
+      clearInterval(interval)
+      sendingRef.current = false
+    }
+  }, [ws, isConnected, isActive, blurIntensity])
 
   const handleCanvasClick = (e) => {
     if (!ws) return
@@ -111,6 +205,7 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate }) {
       x,
       y
     }))
+
   }
 
   return (
@@ -125,13 +220,15 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate }) {
       <canvas
         ref={canvasRef}
         onClick={handleCanvasClick}
-        className="w-full rounded-lg cursor-crosshair shadow-2xl"
+        className="aspect-video w-full rounded-xl bg-slate-900/80 object-contain shadow-2xl cursor-crosshair"
       />
-      {!isActive && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg">
-          <div className="text-white">Starting webcam...</div>
+      {!isConnected || !isActive || !hasFrame ? (
+        <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-slate-950/60">
+          <div className="text-sm text-slate-100">
+            {!isConnected ? 'Connecting to AI server...' : 'Starting webcam...'}
+          </div>
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

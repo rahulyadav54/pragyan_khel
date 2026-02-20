@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 from app.routes import video_routes, websocket_routes
-from app.services.ai_service import AIService
+from app.services.ai_service import ai_service
 import os
 from dotenv import load_dotenv
 
@@ -23,9 +23,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize AI Service
-ai_service = AIService()
 
 # Include routes
 app.include_router(video_routes.router, prefix="/api", tags=["video"])

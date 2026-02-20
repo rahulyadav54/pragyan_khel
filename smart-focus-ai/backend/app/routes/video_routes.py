@@ -84,6 +84,10 @@ async def select_object(data: dict):
 async def reset_tracking():
     """Reset tracking state"""
     ai_service.selected_track_id = None
+    ai_service.selected_box = None
+    ai_service.selected_cls = None
+    ai_service.selected_lost_frames = 0
     ai_service.tracker = ai_service.tracker.__class__()
+    ai_service.current_tracks = {}
     
     return {"status": "reset"}

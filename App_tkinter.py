@@ -39,7 +39,7 @@ class SimpleTracker:
                     best_iou = iou
                     best_id = tid
             
-            if best_id:
+            if best_id is not None:
                 self.tracks[best_id] = {'box': det, 'age': 0}
                 matched.add(best_id)
             else:
@@ -296,31 +296,84 @@ class SmartFocusApp:
     def select_object_at_position(self, x, y):
         if not hasattr(self, 'current_tracks'):
             return
-        
+
+        best_track = None
+        smallest_area = float("inf")
         for tid, track in self.current_tracks.items():
             box = track['box']
             x1, y1, x2, y2 = box
             if x1 <= x <= x2 and y1 <= y <= y2:
-                self.selected_track_id = tid
-                self.tracking_active = True
-                self.status_label.config(text=f"Tracking object ID: {tid} - Click another to switch")
-                return
+                area = max(1, (x2 - x1) * (y2 - y1))
+                if area < smallest_area:
+                    smallest_area = area
+                    best_track = tid
+
+        if best_track is not None:
+            self.selected_track_id = best_track
+            self.tracking_active = True
+            self.status_label.config(text=f"Tracking object ID: {best_track} - Click another to switch")
+
+    def compute_iou(self, box1, box2):
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+
+        inter = (x2 - x1) * (y2 - y1)
+        area1 = max(1, (box1[2] - box1[0]) * (box1[3] - box1[1]))
+        area2 = max(1, (box2[2] - box2[0]) * (box2[3] - box2[1]))
+        union = area1 + area2 - inter
+        return inter / union if union > 0 else 0.0
+
+    def find_best_detection_index(self, tracked_box, detections):
+        if not detections:
+            return None
+
+        best_idx = None
+        best_score = -1.0
+        tx1, ty1, tx2, ty2 = tracked_box
+        tcx = (tx1 + tx2) * 0.5
+        tcy = (ty1 + ty2) * 0.5
+        tdiag = max(1.0, np.hypot(tx2 - tx1, ty2 - ty1))
+
+        for i, det_box in enumerate(detections):
+            iou = self.compute_iou(tracked_box, det_box)
+            dx1, dy1, dx2, dy2 = det_box
+            dcx = (dx1 + dx2) * 0.5
+            dcy = (dy1 + dy2) * 0.5
+            center_dist = np.hypot(tcx - dcx, tcy - dcy) / tdiag
+
+            # Favor same-region detections and penalize sudden far jumps.
+            score = (iou * 0.75) + (max(0.0, 1.0 - center_dist) * 0.25)
+            if score > best_score:
+                best_score = score
+                best_idx = i
+
+        if best_score < 0.15:
+            return None
+        return best_idx
     
     def create_mask_from_box(self, frame, box):
-        """Create segmentation mask from bounding box"""
+        """Fallback mask from bounding box without oval artifacts."""
         mask = np.zeros(frame.shape[:2], dtype=np.uint8)
         x1, y1, x2, y2 = map(int, box)
-        
-        # Create elliptical mask for more natural look
-        center_x = (x1 + x2) // 2
-        center_y = (y1 + y2) // 2
-        width = (x2 - x1) // 2
-        height = (y2 - y1) // 2
-        
-        cv2.ellipse(mask, (center_x, center_y), (width, height), 0, 0, 360, 255, -1)
-        
-        # Smooth edges
-        mask = cv2.GaussianBlur(mask, (21, 21), 11)
+
+        h, w = frame.shape[:2]
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(0, min(x2, w))
+        y2 = max(0, min(y2, h))
+        if x2 <= x1 or y2 <= y1:
+            return mask
+
+        mask[y1:y2, x1:x2] = 255
+
+        # Feather only the border so the subject keeps a clean shape.
+        k = max(5, (min(x2 - x1, y2 - y1) // 8) | 1)
+        mask = cv2.GaussianBlur(mask, (k, k), 0)
         
         return mask
     
@@ -352,9 +405,15 @@ class SmartFocusApp:
                     
                     # Extract detections
                     detections = []
+                    seg_masks = []
                     for box in results.boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         detections.append([x1, y1, x2, y2])
+                    if self.has_segmentation and hasattr(results, 'masks') and results.masks is not None:
+                        for i in range(len(results.boxes)):
+                            raw_mask = results.masks.data[i].cpu().numpy()
+                            raw_mask = cv2.resize(raw_mask, (frame.shape[1], frame.shape[0]))
+                            seg_masks.append((raw_mask > 0.5).astype(np.uint8) * 255)
                     
                     # Update tracker
                     self.current_tracks = self.tracker.update(detections)
@@ -362,19 +421,15 @@ class SmartFocusApp:
                     # Apply blur if tracking
                     if self.tracking_active and self.selected_track_id in self.current_tracks:
                         tracked_box = self.current_tracks[self.selected_track_id]['box']
-                        
-                        # Create mask
-                        if self.has_segmentation and hasattr(results, 'masks') and results.masks is not None:
-                            # Use actual segmentation mask if available
-                            for i, box in enumerate(results.boxes):
-                                box_coords = list(map(int, box.xyxy[0]))
-                                if box_coords == tracked_box:
-                                    mask = results.masks.data[i].cpu().numpy()
-                                    mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
-                                    mask = (mask * 255).astype(np.uint8)
-                                    break
-                            else:
-                                mask = self.create_mask_from_box(frame, tracked_box)
+
+                        det_idx = self.find_best_detection_index(tracked_box, detections)
+                        if det_idx is not None:
+                            tracked_box = detections[det_idx]
+                            self.current_tracks[self.selected_track_id]['box'] = tracked_box
+
+                        if det_idx is not None and det_idx < len(seg_masks):
+                            mask = seg_masks[det_idx]
+                            mask = cv2.GaussianBlur(mask, (9, 9), 0)
                         else:
                             mask = self.create_mask_from_box(frame, tracked_box)
                         

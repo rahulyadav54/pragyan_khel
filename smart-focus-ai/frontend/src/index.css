@@ -1,54 +1,150 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Poppins:wght@500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
 
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: #0f172a;
 }
 
-/* Custom Slider Styles */
-.slider::-webkit-slider-thumb {
+#root {
+  min-height: 100vh;
+}
+
+.bg-app {
+  background:
+    radial-gradient(circle at 20% 20%, rgba(34, 211, 238, 0.12), transparent 48%),
+    radial-gradient(circle at 85% 85%, rgba(59, 130, 246, 0.14), transparent 42%),
+    #0f172a;
+}
+
+.aurora {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(70px);
+  opacity: 0.6;
+  animation: auroraShift 16s ease-in-out infinite alternate;
+}
+
+.aurora-a {
+  width: min(50vw, 700px);
+  height: min(50vw, 700px);
+  left: -10%;
+  top: -22%;
+  background: radial-gradient(circle at 40% 40%, rgba(34, 211, 238, 0.4), rgba(34, 211, 238, 0));
+}
+
+.aurora-b {
+  width: min(44vw, 620px);
+  height: min(44vw, 620px);
+  right: -8%;
+  bottom: -20%;
+  animation-delay: 1.8s;
+  background: radial-gradient(circle at 60% 60%, rgba(59, 130, 246, 0.42), rgba(59, 130, 246, 0));
+}
+
+.particle {
+  position: absolute;
+  border-radius: 9999px;
+  opacity: 0.25;
+  filter: blur(1px);
+  animation: floatDrift 11s ease-in-out infinite;
+}
+
+.particle-a {
+  width: 10px;
+  height: 10px;
+  top: 20%;
+  left: 12%;
+  background: rgba(34, 211, 238, 0.8);
+}
+
+.particle-b {
+  width: 7px;
+  height: 7px;
+  top: 68%;
+  left: 80%;
+  background: rgba(125, 211, 252, 0.9);
+  animation-delay: 1.5s;
+}
+
+.particle-c {
+  width: 12px;
+  height: 12px;
+  top: 42%;
+  left: 65%;
+  background: rgba(59, 130, 246, 0.75);
+  animation-delay: 2.8s;
+}
+
+.glow-focus {
+  box-shadow:
+    0 0 0 1px rgba(103, 232, 249, 0.6),
+    0 0 30px rgba(34, 211, 238, 0.28);
+}
+
+.range-premium {
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.25), rgba(59, 130, 246, 0.3));
+}
+
+.range-premium::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.9), rgba(59, 130, 246, 0.9));
+}
+
+.range-premium::-webkit-slider-thumb {
+  -webkit-appearance: none;
   appearance: none;
   width: 20px;
   height: 20px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #8b5cf6, #6366f1);
-  cursor: pointer;
-  box-shadow: 0 0 10px rgba(139, 92, 246, 0.5);
+  margin-top: -6px;
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.95);
+  background: radial-gradient(circle at 30% 30%, #ffffff, #67e8f9);
+  box-shadow: 0 0 16px rgba(34, 211, 238, 0.6);
 }
 
-.slider::-moz-range-thumb {
+.range-premium::-moz-range-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.9), rgba(59, 130, 246, 0.9));
+}
+
+.range-premium::-moz-range-thumb {
   width: 20px;
   height: 20px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #8b5cf6, #6366f1);
-  cursor: pointer;
-  border: none;
-  box-shadow: 0 0 10px rgba(139, 92, 246, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.95);
+  border-radius: 9999px;
+  background: radial-gradient(circle at 30% 30%, #ffffff, #67e8f9);
+  box-shadow: 0 0 16px rgba(34, 211, 238, 0.6);
 }
 
-/* Scrollbar Styles */
-::-webkit-scrollbar {
-  width: 8px;
+@keyframes auroraShift {
+  0% {
+    transform: translate3d(-8%, -3%, 0) scale(1);
+  }
+  100% {
+    transform: translate3d(7%, 6%, 0) scale(1.08);
+  }
 }
 
-::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
+@keyframes floatDrift {
+  0%, 100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -12px, 0);
+  }
 }
 
-::-webkit-scrollbar-thumb {
-  background: rgba(139, 92, 246, 0.5);
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(139, 92, 246, 0.7);
+@media (max-width: 767px) {
+  .aurora {
+    filter: blur(56px);
+    opacity: 0.45;
+  }
 }
