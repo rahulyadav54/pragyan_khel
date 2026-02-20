@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html>
 <head>
     <title>Smart Focus AI</title>
@@ -45,6 +45,20 @@
             margin-bottom: 20px;
             flex-wrap: wrap;
         }
+        .upload-controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .upload-controls input[type="file"] {
+            padding: 10px;
+            border: 1px solid #d1d5db;
+            border-radius: 10px;
+            background: #fff;
+        }
         button {
             padding: 15px 30px;
             font-size: 16px;
@@ -55,6 +69,7 @@
             transition: all 0.3s;
         }
         .btn-start { background: #10b981; color: white; }
+        .btn-upload { background: #2563eb; color: white; }
         .btn-stop { background: #ef4444; color: white; }
         .btn-reset { background: #f59e0b; color: white; }
         button:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
@@ -109,33 +124,38 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎯 Smart Focus AI</h1>
-        
+        <h1>Smart Focus AI</h1>
+
         <div id="video-container">
             <img id="video" src="/video_feed" alt="Video Stream">
         </div>
-        
+
         <div class="controls">
-            <button class="btn-start" onclick="startWebcam()">📷 Start Webcam</button>
-            <button class="btn-stop" onclick="stopWebcam()">⏹ Stop</button>
-            <button class="btn-reset" onclick="resetTracking()">🔄 Reset</button>
+            <button class="btn-start" onclick="startWebcam()">Start Webcam</button>
+            <button class="btn-upload" onclick="uploadVideo()">Upload Video</button>
+            <button class="btn-stop" onclick="stopSource()">Stop</button>
+            <button class="btn-reset" onclick="resetTracking()">Reset</button>
         </div>
-        
+
+        <div class="upload-controls">
+            <input type="file" id="video-file" accept="video/*">
+        </div>
+
         <div class="slider-container">
-            <label>Blur Intensity: <span id="blur-value">25</span></label>
-            <input type="range" min="5" max="51" value="25" step="2" id="blur-slider" oninput="updateBlur(this.value)">
+            <label>Blur Intensity: <span id="blur-value">71</span></label>
+            <input type="range" min="5" max="99" value="71" step="2" id="blur-slider" oninput="updateBlur(this.value)">
         </div>
-        
-        <div class="status" id="status">Ready - Click Start Webcam</div>
-        
+
+        <div class="status" id="status">Ready - Start webcam or upload a video</div>
+
         <div class="instructions">
-            <h3>📋 How to Use:</h3>
+            <h3>How to Use:</h3>
             <ol>
-                <li>Click "Start Webcam" to begin</li>
-                <li>Click on any object in the video to track it</li>
-                <li>Adjust blur intensity with the slider</li>
-                <li>Click "Reset" to clear tracking</li>
-                <li>Click "Stop" to end session</li>
+                <li>Click "Start Webcam" or upload a video file.</li>
+                <li>Click on any object in the frame to select it.</li>
+                <li>The selected object stays focused while surroundings blur.</li>
+                <li>Use the blur slider to control background blur strength.</li>
+                <li>Click "Reset" to clear selection or "Stop" to end.</li>
             </ol>
         </div>
     </div>
@@ -143,49 +163,90 @@
     <script>
         const video = document.getElementById('video');
         const status = document.getElementById('status');
-        
+
         function startWebcam() {
             fetch('/start', { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
-                    status.textContent = '✅ Webcam started - Click on objects to track';
+                    status.textContent = 'Webcam started - click object to track';
                     status.style.background = '#d1fae5';
                     status.style.color = '#065f46';
                 });
         }
-        
-        function stopWebcam() {
+
+        function uploadVideo() {
+            const input = document.getElementById('video-file');
+            if (!input.files || input.files.length === 0) {
+                status.textContent = 'Please choose a video file first';
+                status.style.background = '#fee2e2';
+                status.style.color = '#991b1b';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('video', input.files[0]);
+
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'uploaded') {
+                    status.textContent = 'Video uploaded - click object to track';
+                    status.style.background = '#d1fae5';
+                    status.style.color = '#065f46';
+                } else {
+                    status.textContent = data.message || 'Upload failed';
+                    status.style.background = '#fee2e2';
+                    status.style.color = '#991b1b';
+                }
+            })
+            .catch(() => {
+                status.textContent = 'Upload failed';
+                status.style.background = '#fee2e2';
+                status.style.color = '#991b1b';
+            });
+        }
+
+        function stopSource() {
             fetch('/stop', { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
-                    status.textContent = '⏹ Stopped';
+                    status.textContent = 'Stopped';
                     status.style.background = '#fee2e2';
                     status.style.color = '#991b1b';
+                    document.getElementById('video-file').value = '';
                 });
         }
-        
+
         function resetTracking() {
             fetch('/reset', { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
-                    status.textContent = '🔄 Tracking reset';
+                    status.textContent = 'Tracking reset';
+                    status.style.background = '#e0e7ff';
+                    status.style.color = '#4338ca';
                 });
         }
-        
+
         function updateBlur(value) {
             document.getElementById('blur-value').textContent = value;
             fetch('/blur', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ intensity: parseInt(value) })
+                body: JSON.stringify({ intensity: parseInt(value, 10) })
             });
         }
-        
+
         video.addEventListener('click', function(e) {
             const rect = video.getBoundingClientRect();
+            if (!video.naturalWidth || !video.naturalHeight) {
+                return;
+            }
             const x = Math.floor((e.clientX - rect.left) * (video.naturalWidth / rect.width));
             const y = Math.floor((e.clientY - rect.top) * (video.naturalHeight / rect.height));
-            
+
             fetch('/select', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -194,11 +255,11 @@
             .then(r => r.json())
             .then(data => {
                 if (data.status === 'selected') {
-                    status.textContent = '🎯 Object tracked! Background blurred';
+                    status.textContent = 'Object selected - background blur active';
                     status.style.background = '#d1fae5';
                     status.style.color = '#065f46';
                 } else {
-                    status.textContent = '❌ No object found at that position';
+                    status.textContent = 'No object found at click location';
                     status.style.background = '#fee2e2';
                     status.style.color = '#991b1b';
                 }

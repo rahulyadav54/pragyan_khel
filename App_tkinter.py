@@ -105,7 +105,12 @@ class SmartFocusApp:
     def __init__(self, root):
         self.root = root
         self.root.title("ZCAM - Smart Focus with AI Blur")
-        self.root.geometry("1280x900")
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w = min(1280, max(900, screen_w - 80))
+        win_h = min(900, max(700, screen_h - 120))
+        self.root.geometry(f"{win_w}x{win_h}")
+        self.root.minsize(900, 700)
         
         self.capture = None
         self.current_frame = None
@@ -118,9 +123,13 @@ class SmartFocusApp:
         
         self.tracker = SimpleTracker()
         self.current_detections = []
+        self.canvas_width = min(1280, max(800, win_w - 40))
+        # Reserve room for controls so they stay visible on smaller displays.
+        self.canvas_height = min(720, max(420, win_h - 220))
         
         self.init_detector()
         self.build_ui()
+        self.try_auto_load_video()
         self.update_frame()
         
     def init_detector(self):
@@ -143,9 +152,10 @@ class SmartFocusApp:
     
     def build_ui(self):
         # Video canvas
-        self.canvas = tk.Canvas(self.root, bg='black', width=1280, height=720)
+        self.canvas = tk.Canvas(self.root, bg='black', width=self.canvas_width, height=self.canvas_height)
         self.canvas.pack(pady=10)
         self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.show_canvas_message("Click 'Select Video' to begin")
         
         # Blur intensity slider
         slider_frame = tk.Frame(self.root)
@@ -188,17 +198,41 @@ class SmartFocusApp:
             filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv"), ("All files", "*.*")]
         )
         if filepath:
-            self.video_path = filepath
-            self.btn_start.config(state=tk.NORMAL, bg="#33B533")
-            self.status_label.config(text=f"Selected: {os.path.basename(filepath)}")
-            
-            if self.capture:
-                self.capture.release()
-            self.capture = cv2.VideoCapture(filepath)
-            ret, frame = self.capture.read()
-            if ret:
-                self.current_frame = frame
-                self.display_frame(frame)
+            self.load_video(filepath)
+
+    def load_video(self, filepath):
+        self.video_path = filepath
+        self.btn_start.config(state=tk.NORMAL, bg="#33B533")
+        self.status_label.config(text=f"Selected: {os.path.basename(filepath)}")
+        
+        if self.capture:
+            self.capture.release()
+        self.capture = cv2.VideoCapture(filepath)
+        ret, frame = self.capture.read()
+        if ret:
+            self.current_frame = frame
+            self.display_frame(frame)
+        else:
+            self.show_canvas_message("Unable to open selected video")
+            self.status_label.config(text=f"Failed to open: {os.path.basename(filepath)}")
+            self.btn_start.config(state=tk.DISABLED, bg="gray")
+            self.video_path = None
+
+    def try_auto_load_video(self):
+        for name in ("sample.mp4", "sample_walking.mp4", "test_video.mp4"):
+            if os.path.exists(name):
+                self.load_video(name)
+                return
+
+    def show_canvas_message(self, text):
+        self.canvas.delete("all")
+        self.canvas.create_text(
+            self.canvas_width // 2,
+            self.canvas_height // 2,
+            text=text,
+            fill="#DDDDDD",
+            font=("Arial", 20, "bold")
+        )
     
     def start_processing(self):
         if not self.capture or not self.capture.isOpened():
@@ -364,6 +398,9 @@ class SmartFocusApp:
         
         canvas_w = self.canvas.winfo_width()
         canvas_h = self.canvas.winfo_height()
+        if canvas_w <= 1 or canvas_h <= 1:
+            canvas_w = self.canvas_width
+            canvas_h = self.canvas_height
         
         scale = min(canvas_w/w, canvas_h/h)
         new_w, new_h = int(w*scale), int(h*scale)
