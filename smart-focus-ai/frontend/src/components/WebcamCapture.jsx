@@ -24,9 +24,9 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate, onObjectSele
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const sendingRef = useRef(false)
-  const qualityRef = useRef(0.55)
-  const sendEveryMs = 42
-  const maxProcessingWidth = 960
+  const qualityRef = useRef(0.48)
+  const sendEveryMs = 34
+  const maxProcessingWidth = 640
   const [ws, setWs] = useState(null)
   const [isActive, setIsActive] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
@@ -173,9 +173,9 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate, onObjectSele
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: {
-          width: { ideal: 960 },
-          height: { ideal: 540 },
-          frameRate: { ideal: 20, max: 24 }
+          width: { ideal: 640 },
+          height: { ideal: 360 },
+          frameRate: { ideal: 30, max: 30 }
         }
       })
       const video = videoRef.current

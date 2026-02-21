@@ -42,7 +42,7 @@ async def websocket_video(websocket: WebSocket):
                         processed_frame, detections = frame, []
 
                     # Encode result
-                    ok, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 68])
+                    ok, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 58])
                     if not ok:
                         continue
                     frame_base64 = base64.b64encode(buffer).decode('utf-8')

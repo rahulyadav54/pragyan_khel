@@ -102,9 +102,9 @@ class AIService:
 
         # Performance + robustness controls.
         self.frame_index = 0
-        self.detection_interval = 2
-        self.inference_size_idle = 512
-        self.inference_size_active = 576
+        self.detection_interval = 3
+        self.inference_size_idle = 384
+        self.inference_size_active = 448
         self.last_results = None
         self.low_light_threshold = 88.0
 
@@ -117,14 +117,15 @@ class AIService:
     async def initialize(self):
         """Initialize YOLO model (segmentation first)."""
         try:
-            preferred_model = os.getenv("MODEL_PATH", "yolo11n-seg.pt")
+            # Default to detection model for realtime FPS. Segmentation can be forced via MODEL_PATH.
+            preferred_model = os.getenv("MODEL_PATH", "yolo11n.pt")
             try:
                 self.detector = YOLO(preferred_model)
-                print(f"YOLO segmentation model loaded: {preferred_model}")
+                print(f"YOLO model loaded: {preferred_model}")
             except Exception:
-                fallback_model = "yolov8n-seg.pt"
+                fallback_model = "yolov8n.pt"
                 self.detector = YOLO(fallback_model)
-                print(f"YOLO segmentation model loaded: {fallback_model}")
+                print(f"YOLO model loaded: {fallback_model}")
             self.is_initialized = True
         except Exception as e:
             print(f"Failed to load YOLO: {e}")
@@ -175,7 +176,7 @@ class AIService:
 
             conf = float(box.conf[0])
             cls = int(box.cls[0])
-            if conf < 0.25:
+            if conf < 0.28:
                 continue
 
             mask = None
@@ -343,15 +344,15 @@ class AIService:
 
     def _set_adaptive_runtime(self) -> None:
         if self.selected_track_id is None:
-            self.detection_interval = 3
+            self.detection_interval = 4
             return
         speed = float(np.linalg.norm(self.selected_point_velocity))
-        if speed > 10.0:
+        if speed > 11.0:
             self.detection_interval = 1
-        elif speed > 4.0:
+        elif speed > 5.0:
             self.detection_interval = 2
         else:
-            self.detection_interval = 2
+            self.detection_interval = 3
 
     def apply_blur(self, frame: np.ndarray, mask: np.ndarray, blur_intensity: int = 25) -> np.ndarray:
         """Apply background blur."""
@@ -359,7 +360,15 @@ class AIService:
         if blur_intensity % 2 == 0:
             blur_intensity += 1
 
-        blurred = cv2.GaussianBlur(frame, (blur_intensity, blur_intensity), 0)
+        # Faster cinematic blur: blur in lower-res space, then upscale.
+        h, w = frame.shape[:2]
+        scale = 0.5 if max(h, w) >= 720 else 0.65
+        sw = max(1, int(w * scale))
+        sh = max(1, int(h * scale))
+        small = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_LINEAR)
+        small_blur_k = max(5, int((blur_intensity * scale) // 2 * 2 + 1))
+        blurred_small = cv2.GaussianBlur(small, (small_blur_k, small_blur_k), 0)
+        blurred = cv2.resize(blurred_small, (w, h), interpolation=cv2.INTER_LINEAR)
         mask_norm = mask.astype(float) / 255.0
         mask_3ch = np.stack([mask_norm] * 3, axis=2)
 
