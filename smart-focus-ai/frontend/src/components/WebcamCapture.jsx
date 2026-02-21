@@ -1,11 +1,23 @@
 import { useRef, useEffect, useState } from 'react'
 
-const getWebSocketUrl = () => {
+const getWebSocketCandidates = () => {
+  const candidates = []
   if (import.meta.env.VITE_WS_URL) {
-    return import.meta.env.VITE_WS_URL
+    candidates.push(import.meta.env.VITE_WS_URL)
   }
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${protocol}://${window.location.host}/ws/video`
+  const secure = window.location.protocol === 'https:'
+  const protocol = secure ? 'wss' : 'ws'
+  const host = window.location.host
+  const hostname = window.location.hostname
+
+  candidates.push(`${protocol}://${host}/ws/video`)
+
+  if (!secure && (hostname === 'localhost' || hostname === '127.0.0.1')) {
+    candidates.push('ws://localhost:8000/ws/video')
+    candidates.push('ws://127.0.0.1:8000/ws/video')
+  }
+
+  return [...new Set(candidates)]
 }
 
 export default function WebcamCapture({ blurIntensity, onFpsUpdate, onObjectSelect, onLoadingChange }) {
@@ -19,84 +31,126 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate, onObjectSele
   const [isActive, setIsActive] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const [hasFrame, setHasFrame] = useState(false)
+  const [connectionError, setConnectionError] = useState('')
   const fpsRef = useRef({ frames: 0, lastTime: Date.now() })
 
   useEffect(() => {
+    let activeSocket = null
+    let cancelled = false
+
     if (onLoadingChange) {
       onLoadingChange(true)
     }
 
-    const websocket = new WebSocket(getWebSocketUrl())
-    
-    websocket.onopen = () => {
-      setIsConnected(true)
-      startWebcam()
-    }
+    const setupSocketHandlers = (socket) => {
+      socket.onerror = (error) => {
+        console.error('WebSocket error:', error)
+      }
 
-    websocket.onerror = (error) => {
-      console.error('WebSocket error:', error)
-      setIsConnected(false)
-      if (onLoadingChange) {
-        onLoadingChange(false)
-      }
-    }
-    
-    websocket.onmessage = (event) => {
-      let data
-      try {
-        data = JSON.parse(event.data)
-      } catch (error) {
-        console.error('Invalid websocket payload:', error)
-        return
-      }
-      
-      if (data.type === 'frame') {
-        sendingRef.current = false
-        const canvas = canvasRef.current
-        if (!canvas) return
-        const ctx = canvas.getContext('2d')
-        if (!ctx) return
-        const img = new Image()
+      socket.onmessage = (event) => {
+        let data
+        try {
+          data = JSON.parse(event.data)
+        } catch (error) {
+          console.error('Invalid websocket payload:', error)
+          return
+        }
         
-        img.onload = () => {
-          canvas.width = img.width
-          canvas.height = img.height
-          ctx.drawImage(img, 0, 0)
-          setHasFrame(true)
+        if (data.type === 'frame') {
+          sendingRef.current = false
+          const canvas = canvasRef.current
+          if (!canvas) return
+          const ctx = canvas.getContext('2d')
+          if (!ctx) return
+          const img = new Image()
           
-          fpsRef.current.frames++
-          const now = Date.now()
-          if (now - fpsRef.current.lastTime >= 1000) {
-            onFpsUpdate(fpsRef.current.frames)
-            fpsRef.current.frames = 0
-            fpsRef.current.lastTime = now
+          img.onload = () => {
+            canvas.width = img.width
+            canvas.height = img.height
+            ctx.drawImage(img, 0, 0)
+            setHasFrame(true)
+            
+            fpsRef.current.frames++
+            const now = Date.now()
+            if (now - fpsRef.current.lastTime >= 1000) {
+              onFpsUpdate(fpsRef.current.frames)
+              fpsRef.current.frames = 0
+              fpsRef.current.lastTime = now
+            }
+          }
+          
+          img.src = data.data
+        } else if (data.type === 'selected') {
+          if (onObjectSelect) {
+            onObjectSelect({ selected: data.track_id !== null && data.track_id !== undefined, trackId: data.track_id })
+          }
+        } else if (data.type === 'reset') {
+          if (onObjectSelect) {
+            onObjectSelect({ selected: false, trackId: null })
           }
         }
-        
-        img.src = data.data
-      } else if (data.type === 'selected') {
-        if (onObjectSelect) {
-          onObjectSelect({ selected: data.track_id !== null && data.track_id !== undefined, trackId: data.track_id })
-        }
-      } else if (data.type === 'reset') {
-        if (onObjectSelect) {
-          onObjectSelect({ selected: false, trackId: null })
+      }
+      
+      socket.onclose = () => {
+        if (cancelled) return
+        setIsConnected(false)
+        setIsActive(false)
+        if (onLoadingChange) {
+          onLoadingChange(false)
         }
       }
     }
-    
-    websocket.onclose = () => {
+
+    const connectSocket = async () => {
+      const candidates = getWebSocketCandidates()
+      for (const url of candidates) {
+        if (cancelled) return
+        const socket = new WebSocket(url)
+        activeSocket = socket
+        setupSocketHandlers(socket)
+
+        const opened = await new Promise((resolve) => {
+          const timeout = setTimeout(() => resolve(false), 2200)
+          const handleOpen = () => {
+            clearTimeout(timeout)
+            resolve(true)
+          }
+          const handleError = () => {
+            clearTimeout(timeout)
+            resolve(false)
+          }
+          socket.addEventListener('open', handleOpen, { once: true })
+          socket.addEventListener('error', handleError, { once: true })
+        })
+
+        if (opened) {
+          if (cancelled) {
+            socket.close()
+            return
+          }
+          setConnectionError('')
+          setIsConnected(true)
+          setWs(socket)
+          startWebcam()
+          return
+        }
+        socket.close()
+      }
+
+      setConnectionError('Unable to connect to backend websocket. Start backend on port 8000.')
       setIsConnected(false)
-      setIsActive(false)
       if (onLoadingChange) {
         onLoadingChange(false)
       }
     }
 
-    setWs(websocket)
+    connectSocket()
     
     return () => {
-      websocket.close()
+      cancelled = true
+      if (activeSocket) {
+        activeSocket.close()
+      }
       setIsConnected(false)
       stopWebcam()
       setIsActive(false)
@@ -225,7 +279,7 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate, onObjectSele
       {!isConnected || !isActive || !hasFrame ? (
         <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-slate-950/60">
           <div className="text-sm text-slate-100">
-            {!isConnected ? 'Connecting to AI server...' : 'Starting webcam...'}
+            {!isConnected ? (connectionError || 'Connecting to AI server...') : 'Starting webcam...'}
           </div>
         </div>
       ) : null}

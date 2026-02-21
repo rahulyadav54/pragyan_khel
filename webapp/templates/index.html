@@ -110,6 +110,44 @@
             color: #4338ca;
             font-weight: bold;
         }
+        .feature-panel {
+            margin: 0 auto 16px;
+            max-width: 960px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 14px 16px;
+        }
+        .feature-panel ul {
+            margin-left: 20px;
+            color: #1f2937;
+        }
+        .feature-panel li {
+            margin: 6px 0;
+        }
+        .runtime-chips {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin: 10px 0 0;
+            flex-wrap: wrap;
+        }
+        .chip {
+            padding: 8px 12px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 700;
+            background: #e5e7eb;
+            color: #374151;
+        }
+        .chip.ok {
+            background: #dcfce7;
+            color: #166534;
+        }
+        .chip.warn {
+            background: #ffedd5;
+            color: #9a3412;
+        }
         .instructions {
             margin-top: 20px;
             padding: 20px;
@@ -147,6 +185,15 @@
         </div>
 
         <div class="status" id="status">Ready - Start webcam or upload a video</div>
+        <div class="feature-panel">
+            <ul>
+                <li>Handle fast motion, multiple subjects, occlusion, and low-light conditions.</li>
+            </ul>
+            <div class="runtime-chips">
+                <span class="chip" id="tracking-chip">Tracking: OFF</span>
+                <span class="chip" id="lowlight-chip">Low-light assist: OFF</span>
+            </div>
+        </div>
 
         <div class="instructions">
             <h3>How to Use:</h3>
@@ -163,6 +210,40 @@
     <script>
         const video = document.getElementById('video');
         const status = document.getElementById('status');
+        const trackingChip = document.getElementById('tracking-chip');
+        const lowLightChip = document.getElementById('lowlight-chip');
+
+        function updateRuntimeStatus() {
+            fetch('/status')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.tracking) {
+                        trackingChip.textContent = `Tracking: ON (lost ${data.lost_frames}/${data.occlusion_buffer})`;
+                        trackingChip.classList.add('ok');
+                        trackingChip.classList.remove('warn');
+                    } else {
+                        trackingChip.textContent = 'Tracking: OFF';
+                        trackingChip.classList.remove('ok');
+                        trackingChip.classList.remove('warn');
+                    }
+
+                    if (data.low_light_active) {
+                        lowLightChip.textContent = 'Low-light assist: ON';
+                        lowLightChip.classList.add('warn');
+                        lowLightChip.classList.remove('ok');
+                    } else {
+                        lowLightChip.textContent = 'Low-light assist: OFF';
+                        lowLightChip.classList.add('ok');
+                        lowLightChip.classList.remove('warn');
+                    }
+                })
+                .catch(() => {
+                    trackingChip.textContent = 'Tracking: unavailable';
+                    trackingChip.classList.remove('ok');
+                    lowLightChip.textContent = 'Low-light assist: unavailable';
+                    lowLightChip.classList.remove('ok');
+                });
+        }
 
         function startWebcam() {
             fetch('/start', { method: 'POST' })
@@ -265,6 +346,9 @@
                 }
             });
         });
+
+        setInterval(updateRuntimeStatus, 1000);
+        updateRuntimeStatus();
     </script>
 </body>
 </html>

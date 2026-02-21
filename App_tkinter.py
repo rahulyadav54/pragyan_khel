@@ -15,64 +15,99 @@ except ImportError:
     print("YOLO not available, using fallback detector")
 
 class SimpleTracker:
-    """Simple object tracker using IoU"""
+    """Motion-aware tracker with IoU + center-distance matching."""
     def __init__(self):
         self.tracks = {}
         self.next_id = 0
         self.max_age = 30
-        
+        self.min_match_score = 0.18
+        self.max_center_distance = 2.8
+
     def update(self, detections):
         if not self.tracks:
             for det in detections:
-                self.tracks[self.next_id] = {'box': det, 'age': 0}
+                self.tracks[self.next_id] = {'box': det, 'age': 0, 'velocity': [0, 0, 0, 0]}
                 self.next_id += 1
             return self.tracks
-        
-        # Simple IoU matching
+
+        predicted = {}
+        for tid, track in self.tracks.items():
+            predicted[tid] = self.predict_box(track)
+
         matched = set()
         for det in detections:
-            best_iou = 0
+            best_score = -1.0
             best_id = None
             for tid, track in self.tracks.items():
-                iou = self.compute_iou(det, track['box'])
-                if iou > best_iou and iou > 0.3:
-                    best_iou = iou
+                if tid in matched:
+                    continue
+                score = self.match_score(det, predicted[tid])
+                if score > best_score:
+                    best_score = score
                     best_id = tid
-            
-            if best_id is not None:
-                self.tracks[best_id] = {'box': det, 'age': 0}
+
+            if best_id is not None and best_score >= self.min_match_score:
+                prev = self.tracks[best_id]
+                new_velocity = [det[i] - prev['box'][i] for i in range(4)]
+                old_velocity = prev.get('velocity', [0, 0, 0, 0])
+                smooth_velocity = [
+                    (old_velocity[i] * 0.6) + (new_velocity[i] * 0.4) for i in range(4)
+                ]
+                self.tracks[best_id] = {'box': det, 'age': 0, 'velocity': smooth_velocity}
                 matched.add(best_id)
             else:
-                self.tracks[self.next_id] = {'box': det, 'age': 0}
+                self.tracks[self.next_id] = {'box': det, 'age': 0, 'velocity': [0, 0, 0, 0]}
+                matched.add(self.next_id)
                 self.next_id += 1
-        
-        # Age unmatched tracks
+
         to_delete = []
-        for tid in self.tracks:
+        for tid in list(self.tracks.keys()):
             if tid not in matched:
                 self.tracks[tid]['age'] += 1
+                self.tracks[tid]['box'] = predicted.get(tid, self.tracks[tid]['box'])
+                vel = self.tracks[tid].get('velocity', [0, 0, 0, 0])
+                self.tracks[tid]['velocity'] = [v * 0.8 for v in vel]
                 if self.tracks[tid]['age'] > self.max_age:
                     to_delete.append(tid)
-        
+
         for tid in to_delete:
             del self.tracks[tid]
-        
+
         return self.tracks
-    
+
+    def center(self, box):
+        return ((box[0] + box[2]) * 0.5, (box[1] + box[3]) * 0.5)
+
+    def diagonal(self, box):
+        return max(1.0, np.hypot(box[2] - box[0], box[3] - box[1]))
+
+    def predict_box(self, track):
+        box = track['box']
+        velocity = track.get('velocity', [0, 0, 0, 0])
+        return [int(box[i] + velocity[i]) for i in range(4)]
+
+    def match_score(self, det, pred):
+        iou = self.compute_iou(det, pred)
+        dcx, dcy = self.center(det)
+        pcx, pcy = self.center(pred)
+        center_dist = np.hypot(dcx - pcx, dcy - pcy) / self.diagonal(pred)
+        motion_term = max(0.0, 1.0 - (center_dist / self.max_center_distance))
+        return (iou * 0.65) + (motion_term * 0.35)
+
     def compute_iou(self, box1, box2):
         x1 = max(box1[0], box2[0])
         y1 = max(box1[1], box2[1])
         x2 = min(box1[2], box2[2])
         y2 = min(box1[3], box2[3])
-        
-        if x2 < x1 or y2 < y1:
+
+        if x2 <= x1 or y2 <= y1:
             return 0.0
-        
+
         inter = (x2 - x1) * (y2 - y1)
         area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
         area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
         union = area1 + area2 - inter
-        
+
         return inter / union if union > 0 else 0.0
 
 class SimpleDetector:
@@ -120,7 +155,9 @@ class SmartFocusApp:
         self.video_path = None
         self.video_thread = None
         self.blur_intensity = 25
-        
+        self.low_light_active = False
+        self.low_light_threshold = 90.0
+
         self.tracker = SimpleTracker()
         self.current_detections = []
         self.canvas_width = min(1280, max(800, win_w - 40))
@@ -170,6 +207,8 @@ class SmartFocusApp:
         # Status label
         self.status_label = tk.Label(self.root, text="Ready - Select a video", font=("Arial", 10))
         self.status_label.pack(pady=5)
+        self.low_light_label = tk.Label(self.root, text="Low-light assist: OFF", font=("Arial", 10), fg="#666666")
+        self.low_light_label.pack(pady=2)
         
         # Buttons
         btn_frame = tk.Frame(self.root)
@@ -390,6 +429,40 @@ class SmartFocusApp:
         result = (frame * mask_3ch + blurred * (1 - mask_3ch)).astype(np.uint8)
         
         return result
+
+    def estimate_brightness(self, frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return float(np.mean(gray))
+
+    def enhance_low_light(self, frame):
+        """Enhance darker frames so detector/tracker stay stable in low light."""
+        ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
+        y, cr, cb = cv2.split(ycrcb)
+
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        y = clahe.apply(y)
+        merged = cv2.merge((y, cr, cb))
+        enhanced = cv2.cvtColor(merged, cv2.COLOR_YCrCb2BGR)
+
+        gamma = 1.35
+        lut = np.array([min(255, int((i / 255.0) ** (1.0 / gamma) * 255.0)) for i in range(256)], dtype=np.uint8)
+        enhanced = cv2.LUT(enhanced, lut)
+        return enhanced
+
+    def prepare_detection_frame(self, frame):
+        brightness = self.estimate_brightness(frame)
+        if brightness < self.low_light_threshold:
+            self.low_light_active = True
+            return self.enhance_low_light(frame)
+
+        self.low_light_active = False
+        return frame
+
+    def run_detector(self, frame):
+        try:
+            return self.detector(frame, verbose=False)[0]
+        except TypeError:
+            return self.detector(frame)[0]
     
     def process_video(self):
         while self.processing:
@@ -400,8 +473,10 @@ class SmartFocusApp:
                     continue
                 
                 try:
+                    detection_frame = self.prepare_detection_frame(frame)
+
                     # Run detection
-                    results = self.detector(frame, verbose=False)[0]
+                    results = self.run_detector(detection_frame)
                     
                     # Extract detections
                     detections = []
@@ -470,6 +545,11 @@ class SmartFocusApp:
         self.canvas.create_image(canvas_w//2, canvas_h//2, image=self.photo)
     
     def update_frame(self):
+        if self.low_light_active:
+            self.low_light_label.config(text="Low-light assist: ON", fg="#B06A00")
+        else:
+            self.low_light_label.config(text="Low-light assist: OFF", fg="#666666")
+
         if self.current_frame is not None:
             self.display_frame(self.current_frame)
         self.root.after(33, self.update_frame)
