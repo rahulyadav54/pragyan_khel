@@ -24,8 +24,8 @@ export default function WebcamCapture({ blurIntensity, onFpsUpdate, onObjectSele
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const sendingRef = useRef(false)
-  const qualityRef = useRef(0.6)
-  const sendEveryMs = 60
+  const qualityRef = useRef(0.55)
+  const sendEveryMs = 42
   const maxProcessingWidth = 960
   const [ws, setWs] = useState(null)
   const [isActive, setIsActive] = useState(false)

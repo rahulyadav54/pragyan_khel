@@ -24,8 +24,8 @@ export default function VideoPlayer({ videoSrc, blurIntensity, onFpsUpdate, onOb
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const sendingRef = useRef(false)
-  const qualityRef = useRef(0.62)
-  const sendEveryMs = 55
+  const qualityRef = useRef(0.56)
+  const sendEveryMs = 44
   const maxProcessingWidth = 960
   const [ws, setWs] = useState(null)
   const [isConnected, setIsConnected] = useState(false)

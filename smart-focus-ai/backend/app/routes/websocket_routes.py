@@ -42,7 +42,7 @@ async def websocket_video(websocket: WebSocket):
                         processed_frame, detections = frame, []
 
                     # Encode result
-                    ok, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    ok, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 68])
                     if not ok:
                         continue
                     frame_base64 = base64.b64encode(buffer).decode('utf-8')
@@ -74,6 +74,9 @@ async def websocket_video(websocket: WebSocket):
                     ai_service.selected_box = None
                     ai_service.selected_cls = None
                     ai_service.selected_lost_frames = 0
+                    ai_service.selected_point = None
+                    ai_service.selected_point_velocity = np.array([0.0, 0.0], dtype=np.float32)
+                    ai_service.point_lost_frames = 0
                     await websocket.send_json({
                         'type': 'reset',
                         'status': 'ok'

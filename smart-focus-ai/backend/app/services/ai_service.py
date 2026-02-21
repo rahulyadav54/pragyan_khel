@@ -98,12 +98,21 @@ class AIService:
         self.selected_lost_frames = 0
         self.max_selected_lost_frames = 20
         self.current_tracks = {}
+        self.last_detections = []
 
-        # Better portrait quality: detect each frame + larger inference size.
+        # Performance + robustness controls.
         self.frame_index = 0
-        self.detection_interval = 1
-        self.inference_size = 640
+        self.detection_interval = 2
+        self.inference_size_idle = 512
+        self.inference_size_active = 576
         self.last_results = None
+        self.low_light_threshold = 88.0
+
+        # Point-level tracking for moving targets (ex: pointed hand).
+        self.prev_gray = None
+        self.selected_point = None
+        self.selected_point_velocity = np.array([0.0, 0.0], dtype=np.float32)
+        self.point_lost_frames = 0
 
     async def initialize(self):
         """Initialize YOLO model (segmentation first)."""
@@ -127,16 +136,30 @@ class AIService:
             return [], frame
 
         h, w = frame.shape[:2]
+
+        # Apply enhancement only when needed to avoid extra per-frame cost.
+        try:
+            if float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))) < self.low_light_threshold:
+                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                l, a, b = cv2.split(lab)
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                l = clahe.apply(l)
+                enhanced = cv2.merge([l, a, b])
+                frame = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+        except Exception:
+            pass
+
         scale = 1.0
         max_side = max(h, w)
+        inference_size = self.inference_size_active if self.selected_track_id is not None else self.inference_size_idle
 
-        if max_side > self.inference_size:
-            scale = self.inference_size / float(max_side)
+        if max_side > inference_size:
+            scale = inference_size / float(max_side)
             resized = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_LINEAR)
         else:
             resized = frame
 
-        results = self.detector(resized, imgsz=self.inference_size, verbose=False)[0]
+        results = self.detector(resized, imgsz=inference_size, verbose=False)[0]
         detections = []
         masks_data = getattr(results, "masks", None)
         masks_tensor = masks_data.data if masks_data is not None else None
@@ -152,7 +175,7 @@ class AIService:
 
             conf = float(box.conf[0])
             cls = int(box.cls[0])
-            if conf < 0.35:
+            if conf < 0.25:
                 continue
 
             mask = None
@@ -195,7 +218,54 @@ class AIService:
         self.selected_box = self.current_tracks[best_tid]["box"]
         self.selected_cls = self.current_tracks[best_tid].get("cls")
         self.selected_lost_frames = 0
+        self.selected_point = np.array([float(x), float(y)], dtype=np.float32)
+        self.selected_point_velocity = np.array([0.0, 0.0], dtype=np.float32)
+        self.point_lost_frames = 0
         return best_tid
+
+    def _box_from_point(self, point: np.ndarray, box: List[int], frame_shape: Tuple[int, int, int]) -> List[int]:
+        h, w = frame_shape[:2]
+        x1, y1, x2, y2 = box
+        bw = max(8, x2 - x1)
+        bh = max(8, y2 - y1)
+        cx = int(np.clip(point[0], 0, w - 1))
+        cy = int(np.clip(point[1], 0, h - 1))
+        nx1 = max(0, min(w - 1, cx - bw // 2))
+        ny1 = max(0, min(h - 1, cy - bh // 2))
+        nx2 = max(nx1 + 1, min(w, nx1 + bw))
+        ny2 = max(ny1 + 1, min(h, ny1 + bh))
+        return [nx1, ny1, nx2, ny2]
+
+    def _update_selected_point(self, frame: np.ndarray, selected_track: Optional[dict]) -> None:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        if self.selected_point is not None and self.prev_gray is not None:
+            p0 = self.selected_point.reshape(1, 1, 2).astype(np.float32)
+            p1, st, _ = cv2.calcOpticalFlowPyrLK(
+                self.prev_gray,
+                gray,
+                p0,
+                None,
+                winSize=(19, 19),
+                maxLevel=3,
+                criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 16, 0.03),
+            )
+            if p1 is not None and st is not None and int(st[0][0]) == 1:
+                new_point = p1[0][0]
+                self.selected_point_velocity = (new_point - self.selected_point) * 0.6 + (self.selected_point_velocity * 0.4)
+                self.selected_point = new_point.astype(np.float32)
+                self.point_lost_frames = 0
+            else:
+                self.point_lost_frames += 1
+                self.selected_point = (self.selected_point + self.selected_point_velocity).astype(np.float32)
+                self.selected_point_velocity *= 0.85
+
+        if self.selected_point is not None and selected_track is not None:
+            bx1, by1, bx2, by2 = selected_track["box"]
+            self.selected_point[0] = float(np.clip(self.selected_point[0], bx1, max(bx1, bx2 - 1)))
+            self.selected_point[1] = float(np.clip(self.selected_point[1], by1, max(by1, by2 - 1)))
+
+        self.prev_gray = gray
 
     def _recover_selected_track(self, tracks: dict) -> None:
         if self.selected_track_id in tracks or self.selected_box is None:
@@ -230,6 +300,9 @@ class AIService:
                 self.selected_track_id = None
                 self.selected_box = None
                 self.selected_cls = None
+                self.selected_point = None
+                self.selected_point_velocity = np.array([0.0, 0.0], dtype=np.float32)
+                self.point_lost_frames = 0
                 self.selected_lost_frames = 0
 
     def create_mask(self, frame: np.ndarray, track: dict) -> np.ndarray:
@@ -240,21 +313,45 @@ class AIService:
             seg_mask = cv2.morphologyEx(seg_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
             seg_mask = cv2.morphologyEx(seg_mask, cv2.MORPH_OPEN, kernel, iterations=1)
             seg_mask = cv2.GaussianBlur(seg_mask, (9, 9), 0)
-            return seg_mask
+            base_mask = seg_mask
+        else:
+            fallback = np.zeros(frame.shape[:2], dtype=np.uint8)
+            x1, y1, x2, y2 = map(int, track["box"])
+            h, w = frame.shape[:2]
+            x1 = max(0, min(x1, w - 1))
+            y1 = max(0, min(y1, h - 1))
+            x2 = max(0, min(x2, w))
+            y2 = max(0, min(y2, h))
+            if x2 > x1 and y2 > y1:
+                fallback[y1:y2, x1:x2] = 255
+                edge = max(5, (min(x2 - x1, y2 - y1) // 8) | 1)
+                fallback = cv2.GaussianBlur(fallback, (edge, edge), 0)
+            base_mask = fallback
 
-        fallback = np.zeros(frame.shape[:2], dtype=np.uint8)
-        x1, y1, x2, y2 = map(int, track["box"])
-        h, w = frame.shape[:2]
-        x1 = max(0, min(x1, w - 1))
-        y1 = max(0, min(y1, h - 1))
-        x2 = max(0, min(x2, w))
-        y2 = max(0, min(y2, h))
-        if x2 > x1 and y2 > y1:
-            fallback[y1:y2, x1:x2] = 255
-            edge = max(5, (min(x2 - x1, y2 - y1) // 8) | 1)
-            fallback = cv2.GaussianBlur(fallback, (edge, edge), 0)
+        # Point-priority focus: keep clicked moving point (ex: hand) sharp while still using subject mask.
+        if self.selected_point is not None:
+            px, py = int(self.selected_point[0]), int(self.selected_point[1])
+            x1, y1, x2, y2 = map(int, track["box"])
+            diag = max(20.0, float(np.hypot(x2 - x1, y2 - y1)))
+            radius = int(np.clip(diag * 0.16, 22, 90))
+            point_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+            cv2.circle(point_mask, (px, py), radius, 255, -1)
+            point_mask = cv2.GaussianBlur(point_mask, (19, 19), 0)
+            base_mask = np.maximum(base_mask, point_mask)
 
-        return fallback
+        return base_mask
+
+    def _set_adaptive_runtime(self) -> None:
+        if self.selected_track_id is None:
+            self.detection_interval = 3
+            return
+        speed = float(np.linalg.norm(self.selected_point_velocity))
+        if speed > 10.0:
+            self.detection_interval = 1
+        elif speed > 4.0:
+            self.detection_interval = 2
+        else:
+            self.detection_interval = 2
 
     def apply_blur(self, frame: np.ndarray, mask: np.ndarray, blur_intensity: int = 25) -> np.ndarray:
         """Apply background blur."""
@@ -271,12 +368,14 @@ class AIService:
     def process_frame(self, frame: np.ndarray, blur_intensity: int = 25) -> Tuple[np.ndarray, List]:
         """Process single frame."""
         self.frame_index += 1
+        self._set_adaptive_runtime()
         should_detect = (self.frame_index % self.detection_interval == 0) or (not self.current_tracks)
 
         if should_detect:
             detections, results = self.detect_objects(frame)
             tracks = self.track_objects(detections)
             self.last_results = results
+            self.last_detections = detections
         else:
             tracks = self.current_tracks
 
@@ -287,11 +386,16 @@ class AIService:
 
         if self.selected_track_id is not None and self.selected_track_id in tracks:
             tracked = tracks[self.selected_track_id]
+            self._update_selected_point(frame, tracked)
+            if self.selected_point is not None:
+                tracked["box"] = self._box_from_point(self.selected_point, tracked["box"], frame.shape)
             mask = self.create_mask(frame, tracked)
             processed_frame = self.apply_blur(frame, mask, blur_intensity)
             self.selected_box = tracked["box"]
             self.selected_cls = tracked.get("cls")
             self.selected_lost_frames = 0
+        else:
+            self._update_selected_point(frame, None)
 
         for tid, track in tracks.items():
             box = track["box"]

@@ -87,6 +87,9 @@ async def reset_tracking():
     ai_service.selected_box = None
     ai_service.selected_cls = None
     ai_service.selected_lost_frames = 0
+    ai_service.selected_point = None
+    ai_service.selected_point_velocity = np.array([0.0, 0.0], dtype=np.float32)
+    ai_service.point_lost_frames = 0
     ai_service.tracker = ai_service.tracker.__class__()
     ai_service.current_tracks = {}
     
